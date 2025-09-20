@@ -5,7 +5,7 @@ from langchain_core.prompts import (
 
 PARSER_SYSTEM_MESSAGE = """
 You are a deterministic IR updates parser for disaster-resource requirements.
-Input is a single text string containing a comma-separated list of structured instructions. Your taks is to convert each instruction into exactly one corresponding atomic update. Output must be a list of updates matching the ParsingLLMOutput schema exactly.
+Input is a list of structured instructions. Your taks is to convert each instruction into exactly one corresponding atomic update. Output must be a list of updates matching the ParsingLLMOutput schema exactly.
 
 ====================
 GENERAL RULES
@@ -141,7 +141,7 @@ parser_prompt_template = ChatPromptTemplate.from_messages(
     [
         ("system", PARSER_SYSTEM_MESSAGE),
         # parser_fewshot_example_prompt,
-        ("user", "{user_instructions}"),
+        ("user", "There are {no_of_instrunctions} instructions as follow: {user_instructions}"),
     ]
 )
 

@@ -20,7 +20,11 @@ from parser_prompt import parser_prompt_template
 from datetime import datetime, timezone
 from interpreter_prompt import interpreter_prompt_template
 from change_summarizer_prompt import change_summarizer_prompt_template
-from explain_solver_prompt import sat_explain_solver_prompt_template, unsat_explain_solver_prompt_template
+from explain_solver_prompt import (
+    sat_explain_solver_prompt_template,
+    unsat_explain_solver_prompt_template,
+)
+from explain_spec_prompt import explain_spec_prompt_template
 from spec_compiler import SpecCompiler
 from z3 import sat, unsat, Z3_INT_SORT
 
@@ -38,6 +42,7 @@ class CurrentUpdateRequest(TypedDict):
     text: str
     instructions: str
     turn_index: int
+
 
 class SolverResult(TypedDict):
     spec_version: int
@@ -74,7 +79,7 @@ def controller_llm_node(state: AgentState) -> AgentState:
     )
 
     if response.intent == Intent.UNSUPPORTED_REQUEST:
-        reply = "Unsupported, sorry."
+        reply = response.reply if response.reply else "Unsupported, sorry."
         return {
             "messages": [AIMessage(content=reply)],
             "current_intent": response.intent,
@@ -148,13 +153,14 @@ def parser_llm_node(state: AgentState) -> AgentState:
     """
     Stateless NL to IR using a strict prompt.
     """
-    update_instructions = state.get("current_update_request", {}).get(
-        "instructions", ""
+    update_instructions = (
+        state.get("current_update_request", {}).get("instructions", "").split(",")
     )
     # TODO: handle empty instructions
 
     prompt = parser_prompt_template.format_messages(
-        user_instructions=update_instructions
+        user_instructions=update_instructions,
+        no_of_instrunctions=len(update_instructions),
     )
     response: ParsingLLMOutput = parser_model.invoke(prompt)
 
@@ -239,8 +245,14 @@ explain_spec_model = init_chat_model("gpt-5-mini-2025-08-07", model_provider="op
 
 
 def explain_spec_llm_node(state: AgentState) -> AgentState:
-    print("run explain_spec_model")
-    return {}
+    spec = state.get("current_spec", init_spec)
+    prompt = explain_spec_prompt_template.format_messages(spec=spec)
+    response = explain_solver_model.invoke(prompt)
+    explanation = response.content
+
+    return {
+        "messages": [AIMessage(content=explanation)],
+    }
 
 
 # ==============================================================================
@@ -250,11 +262,11 @@ def solver_node(state: AgentState) -> AgentState:
     # get spec from state
     spec = state.get("current_spec", None)
 
-    if not spec: # TODO: implement "and spec.is_empty():"
+    if not spec:  # TODO: implement "and spec.is_empty():"
         return {
             "solver_result": {
                 "spec_version": spec.version,
-                "explanation": "no constraints or requirements to solve."
+                "explanation": "no constraints or requirements to solve.",
             }
         }
 
@@ -277,10 +289,9 @@ def solver_node(state: AgentState) -> AgentState:
             "solver_result": {
                 "spec_version": spec.version,
                 "result": "SAT",
-                "assignments": assignments
+                "assignments": assignments,
             }
         }
-
 
     elif result == unsat:
         unsat_core = solver.unsat_core()
@@ -289,13 +300,12 @@ def solver_node(state: AgentState) -> AgentState:
             "solver_result": {
                 "spec_version": spec.version,
                 "result": "UNSAT",
-                "unsat_constraints_ids": [c.decl().name() for c in unsat_core]
+                "unsat_constraints_ids": [c.decl().name() for c in unsat_core],
             }
         }
     else:
         raise ValueError(f"unknown result: {result}")
     # GOTO: explain_solver_llm_node
-
 
 
 # ==============================================================================
@@ -318,7 +328,9 @@ def explain_solver_llm_node(state: AgentState) -> AgentState:
         resources = state.get("current_spec", {}).context.resources
         assignments = solver_result.get("assignments")
 
-        prompt = sat_explain_solver_prompt_template.format_messages(resources=resources, assignments=assignments)
+        prompt = sat_explain_solver_prompt_template.format_messages(
+            resources=resources, assignments=assignments
+        )
         response = explain_solver_model.invoke(prompt)
         explanation = response.content
 
@@ -327,14 +339,16 @@ def explain_solver_llm_node(state: AgentState) -> AgentState:
         constraints = state.get("current_spec", {}).constraints
         conflicted_constraints = [c for c in constraints if c.id in conflict_ids]
 
-        prompt = unsat_explain_solver_prompt_template.format_messages(resources=resources, assignments=assignments)
+        prompt = unsat_explain_solver_prompt_template.format_messages(
+            conflicts=conflicted_constraints
+        )
         response = explain_solver_model.invoke(prompt)
         explanation = response.content
 
     # GOTO: END
     return {
         "messages": [AIMessage(content=explanation)],
-        "solver_result": {"explanation": explanation}
+        "solver_result": {"explanation": explanation},
     }
 
 
@@ -411,5 +425,3 @@ while True:
     output = app.invoke({"messages": [HumanMessage(query)]}, config)
     # output["messages"][-1].pretty_print()
     print(f"AI: {output["messages"][-1].content}")
-
-
